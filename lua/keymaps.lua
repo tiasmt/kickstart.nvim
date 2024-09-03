@@ -91,8 +91,8 @@ vim.keymap.set('n', 'c*', '*``cgn')
 vim.keymap.set('n', 'c#', '*``cgN')
 vim.keymap.set('n', 'c#', '*``cgN')
 
-vim.keymap.set('n', 'L', '$')
-vim.keymap.set('n', 'H', '^')
+vim.keymap.set({'n', 'v', 'o'}, 'L', '$', { noremap = true })
+vim.keymap.set({'n', 'v', 'o'}, 'H', '^', { noremap = true })
 
 vim.api.nvim_set_keymap('n', '<C-t>', ':lua InsertTodo()<CR>', { noremap = true, silent = true })
 vim.api.nvim_set_keymap('i', '<C-t>', '// todo: ', { noremap = true, silent = true })
