@@ -91,14 +91,16 @@ vim.keymap.set('n', 'c*', '*``cgn')
 vim.keymap.set('n', 'c#', '*``cgN')
 vim.keymap.set('n', 'c#', '*``cgN')
 
-vim.keymap.set('n', 'L', '$')
-vim.keymap.set('n', 'H', '^')
+vim.keymap.set({'n', 'v', 'o'}, 'L', '$', { noremap = true })
+vim.keymap.set({'n', 'v', 'o'}, 'H', '^', { noremap = true })
 
 vim.api.nvim_set_keymap('n', '<C-t>', ':lua InsertTodo()<CR>', { noremap = true, silent = true })
 vim.api.nvim_set_keymap('i', '<C-t>', '// todo: ', { noremap = true, silent = true })
 
 vim.api.nvim_set_keymap('n', '<C-i>', ':lua InsertId()<CR>', { noremap = true, silent = true })
 vim.api.nvim_set_keymap('i', '<C-i>', '[Id()]', { noremap = true, silent = true })
+
+vim.keymap.set('n', '-', '<CMD>Oil<CR>', { desc = 'Open parent directory' })
 
 --  See `:help wincmd` for a list of all window commands
 vim.keymap.set('n', '<C-h>', '<C-w><C-h>', { desc = 'Move focus to the left window' })
@@ -116,3 +118,13 @@ vim.api.nvim_create_autocmd('TextYankPost', {
     vim.highlight.on_yank()
   end,
 })
+
+vim.keymap.set("n", "J", "mzJ`z")
+vim.keymap.set("n", "<C-d>", "<C-d>zz")
+vim.keymap.set("n", "<C-u>", "<C-u>zz")
+-- replace
+vim.keymap.set("n", "<leader>r", [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
+
+-- move line up / down
+vim.keymap.set("v", "<C-k>", ":m '<-2<CR>gv=gv")
+vim.keymap.set("v", "<C-j>", ":m '>+1<CR>gv=gv")
