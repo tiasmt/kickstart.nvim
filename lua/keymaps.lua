@@ -119,7 +119,8 @@ vim.api.nvim_create_autocmd('TextYankPost', {
   end,
 })
 
-vim.keymap.set("n", "J", "mzJ`z")
+vim.keymap.set('n', 'J', '}', { desc = 'Jump to next paragraph' })
+vim.keymap.set('n', 'K', '{', { desc = 'Jump to previous paragraph' })
 vim.keymap.set("n", "<C-d>", "<C-d>zz")
 vim.keymap.set("n", "<C-u>", "<C-u>zz")
 -- replace
