@@ -30,6 +30,16 @@
 --   R             Re-read the session file and refresh the sidebar
 --   q             Close the sidebar
 --
+-- Diff highlights (applied automatically when a changed file is opened):
+--   Added lines  — full-line green background (links to DiffAdd; override PiReviewAdded)
+--
+-- Change navigation keymaps (default, customisable via setup opts):
+--   <leader>n  Go to the next changed range in the current buffer
+--   <leader>b  Go to the previous changed range in the current buffer
+--
+-- Navigation uses the pre-computed changedLines from the review session
+-- (written by the pi-review extension).  No extra git subprocess is needed.
+--
 -- The review session file is expected at <cwd>/.pi/review-session.json.
 -- That file is written by /review:start inside pi and updated by this plugin.
 
@@ -42,7 +52,9 @@ local M = {}
 local DEFAULT_KEYMAP_COMMENT = "<leader>rc"
 local DEFAULT_KEYMAP_LIST    = "<leader>rl"
 local DEFAULT_KEYMAP_SUBMIT  = "<leader>rs"
-local DEFAULT_KEYMAP_REVIEW  = "<leader>rp"  -- toggle the review sidebar
+local DEFAULT_KEYMAP_REVIEW      = "<leader>rp"  -- toggle the review sidebar
+local DEFAULT_KEYMAP_NEXT_CHANGE = "<leader>n"   -- jump to next changed hunk
+local DEFAULT_KEYMAP_PREV_CHANGE = "<leader>b"   -- jump to previous changed hunk
 
 -- Width of the sidebar window in columns.
 local SIDEBAR_WIDTH = 42
@@ -52,6 +64,12 @@ local ns = vim.api.nvim_create_namespace("pi_review")
 
 -- Namespace for highlight extmarks inside the sidebar buffer.
 local sidebar_ns = vim.api.nvim_create_namespace("pi_review_sidebar")
+
+-- Namespace for git-diff highlight extmarks (added/removed lines).
+-- Kept separate from `ns` so diff highlights can be cleared independently.
+local diff_ns = vim.api.nvim_create_namespace("pi_review_diff")
+
+
 
 -- ---------------------------------------------------------------------------
 -- Sidebar state
@@ -144,6 +162,144 @@ local function render_virtual_text(session)
 end
 
 -- ---------------------------------------------------------------------------
+-- Diff highlighting
+-- ---------------------------------------------------------------------------
+
+-- Find the bufnr whose name exactly matches abs_path among all loaded buffers.
+-- vim.fn.bufnr() does Vim-style pattern matching which can silently fail on
+-- paths with special characters or when the buffer was opened via a symlink.
+-- Iterating with nvim_buf_get_name() is explicit and always correct.
+local function find_loaded_bufnr(abs_path)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr)
+      and vim.api.nvim_buf_get_name(bufnr) == abs_path
+    then
+      return bufnr
+    end
+  end
+  return -1
+end
+
+-- Apply diff highlights to every currently-loaded buffer that belongs to a
+-- changed file in the session.
+--
+-- Uses the pre-computed changedLines ranges written by the pi-review extension
+-- — no git subprocess is needed.
+--
+-- Calling this function multiple times is safe: it clears diff_ns before
+-- re-applying, so no duplicate extmarks accumulate.
+local function render_diff_highlights(session)
+  if not session then return end
+
+  local cwd = vim.fn.getcwd()
+
+  for _, changed_file in ipairs(session.changedFiles or {}) do
+    local rel_path = changed_file.path
+    local abs_path = cwd .. "/" .. rel_path
+    local bufnr    = find_loaded_bufnr(abs_path)
+    if bufnr == -1 then goto continue end
+
+    -- Clear any previous diff extmarks for this buffer.
+    vim.api.nvim_buf_clear_namespace(bufnr, diff_ns, 0, -1)
+
+    local line_count = vim.api.nvim_buf_line_count(bufnr)
+
+    -- Expand each LineRange and highlight every line within it.
+    -- "end" is a Lua keyword, so the JSON key must be accessed via ["end"].
+    for _, range in ipairs(changed_file.changedLines or {}) do
+      for line1 = range.start, range["end"] do
+        if line1 >= 1 and line1 <= line_count then
+          vim.api.nvim_buf_set_extmark(bufnr, diff_ns, line1 - 1, 0, {
+            line_hl_group = "PiReviewAdded",
+            priority      = 10,
+          })
+        end
+      end
+    end
+
+    ::continue::
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Change navigation
+-- ---------------------------------------------------------------------------
+
+-- Return the sorted list of changed-range start line numbers (1-based) for
+-- the file currently open in the active buffer, sourced from the review
+-- session's pre-computed changedLines.
+--
+-- Returns nil (with a user notification) when the data is unavailable.
+local function change_starts_for_current_file()
+  local session, err = read_session()
+  if not session then
+    vim.notify("pi review: " .. err, vim.log.levels.INFO)
+    return nil
+  end
+
+  local abs_path = vim.api.nvim_buf_get_name(0)
+  local cwd      = vim.fn.getcwd() .. "/"
+  if abs_path:sub(1, #cwd) ~= cwd then
+    vim.notify("pi review: current file is outside the project root.", vim.log.levels.INFO)
+    return nil
+  end
+  local rel_path = abs_path:sub(#cwd + 1)
+
+  -- Find the ChangedFile entry whose path matches the current buffer.
+  for _, changed_file in ipairs(session.changedFiles or {}) do
+    if changed_file.path == rel_path then
+      local ranges = changed_file.changedLines or {}
+      if #ranges == 0 then
+        vim.notify("pi review: no changed lines recorded for this file.", vim.log.levels.INFO)
+        return nil
+      end
+      -- changedLines is already sorted and merged by the extension; extract
+      -- the start of each range as the navigation target.
+      local starts = {}
+      for _, range in ipairs(ranges) do
+        table.insert(starts, range.start)
+      end
+      return starts
+    end
+  end
+
+  vim.notify("pi review: current file is not in the review session.", vim.log.levels.INFO)
+  return nil
+end
+
+local function goto_next_change()
+  local starts = change_starts_for_current_file()
+  if not starts then return end
+
+  local cursor_line = vim.fn.line(".")
+  for _, line_nr in ipairs(starts) do
+    if line_nr > cursor_line then
+      vim.cmd(tostring(line_nr))  -- same as typing :N in command mode
+      vim.cmd("normal! zz")
+      return
+    end
+  end
+
+  vim.notify("pi review: no more changes after cursor.", vim.log.levels.INFO)
+end
+
+local function goto_prev_change()
+  local starts = change_starts_for_current_file()
+  if not starts then return end
+
+  local cursor_line = vim.fn.line(".")
+  for i = #starts, 1, -1 do
+    if starts[i] < cursor_line then
+      vim.cmd(tostring(starts[i]))  -- same as typing :N in command mode
+      vim.cmd("normal! zz")
+      return
+    end
+  end
+
+  vim.notify("pi review: no more changes before cursor.", vim.log.levels.INFO)
+end
+
+-- ---------------------------------------------------------------------------
 -- UUID generation (Lua, no external deps)
 -- ---------------------------------------------------------------------------
 
@@ -172,6 +328,9 @@ local function setup_highlights()
   -- Stats line and decorative separators.
   vim.api.nvim_set_hl(0, "PiReviewMeta",       { link = "Special",        default = true })
   vim.api.nvim_set_hl(0, "PiReviewSeparator",  { link = "NonText",        default = true })
+  -- Diff: added lines get a green full-line background (links to DiffAdd so any
+  -- colorscheme that themes DiffAdd will automatically look correct here).
+  vim.api.nvim_set_hl(0, "PiReviewAdded", { link = "DiffAdd", default = true })
 end
 
 -- ---------------------------------------------------------------------------
@@ -225,7 +384,8 @@ local function sidebar_render(session)
   table.insert(hl_ops, { #lines - 1, 0, -1, "PiReviewSeparator" })
 
   -- ── One line per changed file ──
-  for _, rel_path in ipairs(files) do
+  for _, changed_file in ipairs(files) do
+    local rel_path    = changed_file.path
     local count       = comment_counts[rel_path] or 0
     local is_reviewed = count > 0
 
@@ -297,9 +457,12 @@ local function sidebar_open_file(rel_path)
   vim.api.nvim_set_current_win(target_win)
   vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
 
-  -- Re-render virtual text now that this buffer is loaded.
+  -- Re-render virtual text and diff highlights now that this buffer is loaded.
   local session, _ = read_session()
-  if session then render_virtual_text(session) end
+  if session then
+    render_virtual_text(session)
+    render_diff_highlights(session)
+  end
 end
 
 -- Called when the user presses <CR>/l/o inside the sidebar.
@@ -433,6 +596,7 @@ local function cmd_review()
 
   sidebar_open(session)
   render_virtual_text(session)
+  render_diff_highlights(session)
 
   local n            = #session.comments
   local comment_note = n == 0 and "no comments yet" or (n .. " existing comment(s)")
@@ -669,11 +833,12 @@ local function cmd_submit()
   -- Delete session file so a fresh review can be started afterwards.
   os.remove(session_path())
 
-  -- Close sidebar and clear virtual text from all open buffers.
+  -- Close sidebar and clear all extmarks from open buffers.
   sidebar_close()
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) then
       clear_virtual_text(bufnr)
+      vim.api.nvim_buf_clear_namespace(bufnr, diff_ns, 0, -1)
     end
   end
 end
@@ -697,6 +862,7 @@ local function cmd_clear()
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
         if vim.api.nvim_buf_is_loaded(bufnr) then
           clear_virtual_text(bufnr)
+          vim.api.nvim_buf_clear_namespace(bufnr, diff_ns, 0, -1)
         end
       end
       vim.notify("Review session cleared.", vim.log.levels.INFO)
@@ -710,10 +876,12 @@ end
 
 function M.setup(opts)
   opts = opts or {}
-  local keymap_comment = opts.keymap_comment or DEFAULT_KEYMAP_COMMENT
-  local keymap_list    = opts.keymap_list    or DEFAULT_KEYMAP_LIST
-  local keymap_submit  = opts.keymap_submit  or DEFAULT_KEYMAP_SUBMIT
-  local keymap_review  = opts.keymap_review  or DEFAULT_KEYMAP_REVIEW
+  local keymap_comment     = opts.keymap_comment     or DEFAULT_KEYMAP_COMMENT
+  local keymap_list        = opts.keymap_list        or DEFAULT_KEYMAP_LIST
+  local keymap_submit      = opts.keymap_submit      or DEFAULT_KEYMAP_SUBMIT
+  local keymap_review      = opts.keymap_review      or DEFAULT_KEYMAP_REVIEW
+  local keymap_next_change = opts.keymap_next_change or DEFAULT_KEYMAP_NEXT_CHANGE
+  local keymap_prev_change = opts.keymap_prev_change or DEFAULT_KEYMAP_PREV_CHANGE
 
   -- ── Commands ──────────────────────────────────────────────────────────────
 
@@ -765,8 +933,10 @@ function M.setup(opts)
     cmd_comment(line1, line2)
   end, { desc = "pi: add review comment on selection" })
 
-  vim.keymap.set("n", keymap_list,   cmd_list,   { desc = "pi: list review comments" })
-  vim.keymap.set("n", keymap_submit, cmd_submit, { desc = "pi: submit review to agent" })
+  vim.keymap.set("n", keymap_list,        cmd_list,         { desc = "pi: list review comments" })
+  vim.keymap.set("n", keymap_submit,      cmd_submit,       { desc = "pi: submit review to agent" })
+  vim.keymap.set("n", keymap_next_change, goto_next_change, { desc = "pi: go to next change" })
+  vim.keymap.set("n", keymap_prev_change, goto_prev_change, { desc = "pi: go to previous change" })
 end
 
 return M
