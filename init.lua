@@ -183,6 +183,8 @@ require('lazy').setup({
       require('which-key').setup()
       -- Document existing key chains
       require('which-key').add {
+        { '<leader>b', group = '[B]uffer / explorer' },
+        { '<leader>b_', hidden = true },
         { '<leader>c', group = '[C]ode' },
         { '<leader>c_', hidden = true },
         { '<leader>d', group = '[D]ocument' },
@@ -830,6 +832,15 @@ require('lazy').setup({
     },
   },
 })
+
+-- pi-review: code review workflow for agent-generated changes.
+-- Plugin source: tools/pi-review/pi-review.lua (keep in sync with the repo).
+-- Commands: :PiReview, :PiReviewComment, :PiReviewList, :PiReviewSubmit, :PiReviewClear
+require('pi-review').setup {
+  keymap_comment = '<leader>rc', -- add comment (normal + visual)
+  keymap_list    = '<leader>rl', -- list all comments
+  keymap_submit  = '<leader>rs', -- submit review to agent
+}
 
 -- The line beneath this is called `modeline`. See `:help modeline`
 -- vim: ts=2 sts=2 sw=2 et
